@@ -1,246 +1,294 @@
-import psutil
 import time
-import paramiko
-import logging
-import io
+import win32gui
+import win32process
 import configparser
-import pygetwindow as gw
+import os
+import paramiko
+import io
+import logging
+import psutil
 
-# Create a ConfigParser object
-config = configparser.ConfigParser()
-
-# INI file
-config.read('tty2rpi_sender.ini')
-
-# Setup logging
+# =========================
+# Logging Configuration
+# =========================
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
 
-remote_ip = config['tty2rpi']['remote_ip']
-username = config['tty2rpi']['username']
-password = config['tty2rpi']['password']
+# =========================
+# Constants
+# =========================
+CONFIG_PATH = "tty2rpi_sender.ini"   # INI file for SSH only
+CMDCOR_DATA = "CMDCOR§PARAM§"        # Prefix tty2rpi expects
+CHECK_INTERVAL = 0.5                 # How often to scan for window changes (seconds)
 
-remote_file_path = "/dev/shm/tty2rpi.socket"
+# Known emulator process names -> canonical emulator key (use LOWERCASE keys)
+PROCESS_TO_EMU = {
+    "mame.exe": "mame",
+    "flycast.exe": "flycast",
+    "duckstation-qt-x64-releaseltcg.exe": "duckstation",
+    "teknoparrotui.exe": "teknoparrot",
+    # --- PCSX2 common binaries ---
+    "pcsx2.exe": "pcsx2",
+    "pcsx2-qt.exe": "pcsx2",
+    "pcsx2-qtx64-avx2.exe": "pcsx2",
+    # --- Dolphin common binaries ---
+    "dolphin.exe": "dolphin",
+    "dolphinqt.exe": "dolphin",
+    "dolphinqt2.exe": "dolphin",
+}
 
-# system processes
-MAME_PROCESS = "mame.exe"
-DC_EMU_PROCESS = "flycast.exe"
-PS1_EMU_PROCESS = "duckstation-qt-x64-ReleaseLTCG.exe"
+# =========================
+# Load Settings from INI
+# =========================
+config = configparser.ConfigParser()
+if not os.path.exists(CONFIG_PATH):
+    logging.error(f"INI file not found: {CONFIG_PATH}")
+    raise SystemExit(1)
 
-# How often to check the running processes
-CHECK_INTERVAL = 5
+config.read(CONFIG_PATH)
 
-# Prefix command - This is the magic that tty2rpi is looking for
-CMDCOR_DATA = "CMDCOR§PARAM§"
+try:
+    # SSH connection details
+    remote_ip = config['tty2rpi']['remote_ip']
+    username = config['tty2rpi']['username']
+    password = config['tty2rpi']['password']
+except Exception as e:
+    logging.error(f"Error reading INI file: {e}")
+    raise SystemExit(1)
 
-def mame_process_running(MAME_PROCESS):
-    for proc in psutil.process_iter(['name', 'pid']):
-        if proc.info['name'] == MAME_PROCESS:
-            return proc.info['pid']
-    return False
+# =========================
+# Data Structures for Tracking Windows
+# =========================
+tracked_windows = {}      # {hwnd: last_seen_title}
+last_sent_titles = {}     # {hwnd: last_title_we_triggered_on}
+hwnd_emulator = {}        # {hwnd: "mame"|"flycast"|"duckstation"|"teknoparrot"|"pcsx2"|"dolphin"}
+last_sent_payload = {}    # {hwnd: last_payload_string_sent}  # Debounce by payload
 
-def dreamcast_process_running(DC_EMU_PROCESS):
-    for proc in psutil.process_iter(['name', 'pid']):
-        if proc.info['name'] == DC_EMU_PROCESS:
-            return proc.info['pid']
-    return False
-
-def psx_process_running(PS1_EMU_PROCESS):
-    for proc in psutil.process_iter(['name', 'pid']):
-        if proc.info['name'] == PS1_EMU_PROCESS:
-            return proc.info['pid']
-    return False
-
-def update_tty2rpi_marquee(marquee_data):
-
+# =========================
+# Helpers
+# =========================
+def get_hwnd_process_name(hwnd):
+    """
+    Returns lowercase process name for a given window handle, or '' on failure.
+    """
     try:
-        # Set up SSH and SFTP
+        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+        if not pid:
+            return ""
+        return psutil.Process(pid).name().lower()
+    except Exception:
+        return ""
+
+# =========================
+# Window Scanning Function
+# =========================
+def find_and_add_matching_windows():
+    """
+    Enumerates all visible top-level windows and adds those that
+    belong to a known emulator process (per PROCESS_TO_EMU).
+    """
+    def callback(hwnd, _):
+        try:
+            if not win32gui.IsWindowVisible(hwnd):
+                return
+
+            title = win32gui.GetWindowText(hwnd)
+            if not title:
+                return
+
+            proc_name = get_hwnd_process_name(hwnd)
+            emu = PROCESS_TO_EMU.get(proc_name)
+            if not emu:
+                return
+
+            if hwnd not in tracked_windows:
+                tracked_windows[hwnd] = title
+                hwnd_emulator[hwnd] = emu
+                logging.info(f"[NEW WINDOW] HWND={hwnd} | emu={emu} | Title='{title}'")
+                # Send initial state immediately, and record it to avoid a second send on first loop
+                parse_and_send(hwnd, title)
+                last_sent_titles[hwnd] = title
+        except Exception as e:
+            logging.debug(f"[ENUM ERR] hwnd={hwnd}: {e}")
+
+    win32gui.EnumWindows(callback, None)
+
+# =========================
+# Send Data to tty2rpi via SSH
+# =========================
+def update_tty2rpi_marquee(marquee_data):
+    """
+    Opens an SSH connection and writes the given marquee_data
+    to /dev/shm/tty2rpi.socket on the Raspberry Pi.
+    """
+    try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(remote_ip, username=username, password=password)
+        ssh.connect(remote_ip, username=username, password=password, timeout=5.0)
+        # Keepalive for flaky networks
+        try:
+            transport = ssh.get_transport()
+            if transport:
+                transport.set_keepalive(15)
+        except Exception:
+            pass
 
         sftp = ssh.open_sftp()
-
-        # Convert string to file-like object
         file_like = io.StringIO(marquee_data)
 
-        # Open and overwrite remote file
-        with sftp.file(remote_file_path, 'w') as remote_file:
+        with sftp.file("/dev/shm/tty2rpi.socket", 'w') as remote_file:
             remote_file.write(file_like.read())
-            remote_file.flush()  # Ensure all data is written
+            remote_file.flush()
 
-        print(f"[INFO] Successfully wrote to {remote_file_path}")
-        print(f"[INFO] Data to send to tty2rpi.socket: {marquee_data}")
+        logging.info(f"[SEND] -> tty2rpi.socket: {marquee_data}")
 
         sftp.close()
         ssh.close()
 
     except Exception as e:
-        print(f"[ERROR] {e}")
+        logging.error(f"[ERROR][SSH] {e}")
 
-def monitor_processes():
+# =========================
+# Emulator Title Parsing & Sending
+# =========================
+def parse_and_send(hwnd, new_title):
+    """
+    Uses the remembered emulator for this hwnd, logs the title,
+    extracts the game/menu label, and sends it to the Raspberry Pi via SSH.
+    Debounced by payload so we don't send duplicate CMDCOR strings.
+    """
+    emulator = hwnd_emulator.get(hwnd)
+    if not emulator:
+        logging.debug(f"[SKIP] Unknown emulator for HWND {hwnd} | '{new_title}'")
+        return
 
-    last_loaded_rom = None  # Track the last loaded MAME ROM
-    last_loaded_dc_rom = None  # Track the last loaded DC ROM
-    last_loaded_ps1_rom = None # Track the last loaded PS1 ROM
+    logging.info(f"[INFO] HWND: {hwnd} | Emu: {emulator} | Title bar data: {new_title}")
 
-    while True:
+    loaded_rom = None
+    low = new_title.lower().strip()
 
-        try:
-            # Start MAME process check
-            if mame_process_running(MAME_PROCESS):
+    if emulator == "mame":
+        # MAME window title typically contains [rom_name]
+        start = new_title.find("[")
+        end = new_title.find("]", start)
+        if start != -1 and end != -1:
+            loaded_rom = new_title[start + 1:end]
+            if loaded_rom == "___empty":
+                loaded_rom = "MAME-MENU"
 
-                # gather all the running tasks
-                for window in gw.getAllWindows():
+    elif emulator == "flycast":
+        # MENU: "Flycast" (or with version); GAME: "Flycast - Game Name" or sometimes just the game name
+        if low.startswith("flycast"):
+            dash = new_title.find("- ")
+            if dash != -1:
+                loaded_rom = new_title[dash + 2:].strip()
+            else:
+                loaded_rom = "DCEMU-MENU"
+        else:
+            loaded_rom = new_title.strip()
 
-                    # MAME application window
-                    if 'MAME' in window.title:
+    elif emulator == "duckstation":
+        # Ignore transient/launcher/file dialog windows
+        if ("duckstation-qt-x64-releaseltcg" in low) or ("select disc image" in low):
+            logging.info(f"[SKIP] DuckStation transient window: {new_title}")
+            return
+        # MENU: "DuckStation" or "DuckStation <version...>"
+        # GAME: title is just the game name (e.g., "1Xtreme (USA)")
+        if low.startswith("duckstation"):
+            loaded_rom = "PS1EMU-MENU"
+        else:
+            loaded_rom = new_title.strip()
 
-                        current_game = window.title
+    elif emulator == "teknoparrot":
+        # MENU: "TeknoParrot" (or with version); GAME: often just game name
+        if low.startswith("teknoparrot"):
+            loaded_rom = "TPEMU-MENU"
+        else:
+            loaded_rom = new_title.strip()
 
-                        # find the loaded MAME rom in the title bar.  Rom title is located between the brackets
-                        # - "[rom name]"
-                        start_index = current_game.find("[")
-                        end_index = current_game.find("]", start_index)
+    elif emulator == "pcsx2":
+        # Ignore transient/launcher/file dialog windows for PCSX2 (more forgiving variants)
+        if ("pcsx2-qt" in low) or ("select iso image" in low) or ("open iso" in low):
+            logging.info(f"[SKIP] PCSX2 transient window: {new_title}")
+            return
+        # MENU: "PCSX2 ..." (menu or version info); GAME: window title becomes just the game name
+        if low.startswith("pcsx2"):
+            loaded_rom = "PS2EMU-MENU"
+        else:
+            loaded_rom = new_title.strip()
 
-                        if start_index != -1 and end_index != -1:
+    elif emulator == "dolphin":
+        # Ignore transient/launcher/file dialog windows for Dolphin (more forgiving)
+        if ("dolphin-emu" in low) or ("confirm" in low) or ("open" in low and "file" in low):
+            logging.info(f"[SKIP] Dolphin transient window: {new_title}")
+            return
+        # MENU: "Dolphin ..." (menu or version info); GAME: window title becomes just the game name
+        if low.startswith("dolphin"):
+            loaded_rom = "DOLPHIN-MENU"
+        else:
+            loaded_rom = new_title.strip()
 
-                            # extract the rom name sans brackets
-                            loaded_rom = current_game[start_index + 1: end_index]
+    # If we couldn't parse anything meaningful, don't send
+    if not loaded_rom:
+        logging.debug(f"[SKIP] Parsed empty from '{new_title}' ({emulator})")
+        return
 
-                            # prevent rom name from writing over and over * infinity
-                            if loaded_rom != last_loaded_rom:
+    # Build payload once and debounce by payload
+    payload = CMDCOR_DATA + loaded_rom
+    if last_sent_payload.get(hwnd) == payload:
+        logging.debug(f"[SKIP DUP] HWND={hwnd} payload unchanged: {payload}")
+        return
 
-                                mame_pid = mame_process_running(MAME_PROCESS)
+    update_tty2rpi_marquee(payload)
+    last_sent_payload[hwnd] = payload
+    logging.info(f"[INFO] {emulator} title: {loaded_rom}")
 
-                                print(f"[INFO] Application: {MAME_PROCESS}, PID: {mame_pid}")
-                                print(f"[INFO] Original title bar data:: {current_game}")
+# =========================
+# Main Real-Time Loop
+# =========================
+def main_loop():
+    """
+    Continuously scans for emulator windows and sends updated
+    titles to the Raspberry Pi in real time when they change.
+    """
+    logging.info("tty2rpi sender...")
+    logging.info("Press Ctrl+C to stop.\n")
 
-                                # Update the last loaded game
-                                last_loaded_rom = loaded_rom
+    try:
+        while True:
+            # Discover any new matching windows
+            find_and_add_matching_windows()
 
-                                # Default MAME window title "rom name"
-                                if loaded_rom == "___empty":
+            # Check existing tracked windows for changes
+            for hwnd in list(tracked_windows.keys()):
+                if not win32gui.IsWindow(hwnd):
+                    # Window closed: cleanup
+                    old_title = tracked_windows.get(hwnd, "")
+                    logging.info(f"[CLOSE] HWND={hwnd} | '{old_title}'")
+                    tracked_windows.pop(hwnd, None)
+                    last_sent_titles.pop(hwnd, None)
+                    hwnd_emulator.pop(hwnd, None)
+                    last_sent_payload.pop(hwnd, None)
+                    continue
 
-                                    print(f"[INFO] Title bar data: {loaded_rom}")
+                current_title = win32gui.GetWindowText(hwnd)
+                prev = tracked_windows.get(hwnd)
+                if current_title == prev:
+                    # No change — skip quickly
+                    continue
 
-                                    # change "___empty" to "MAME-MENU" to match tty2rpi marquee image filename
-                                    loaded_rom = "MAME-MENU"
+                logging.info(f"[TITLE CHANGED] HWND={hwnd} | '{prev}' -> '{current_title}'")
+                tracked_windows[hwnd] = current_title
+                parse_and_send(hwnd, current_title)
+                last_sent_titles[hwnd] = current_title
 
-                                    # add tty2rpi command "CMDCOR§PARAM§" before "MAME-MENU"
-                                    marquee_data = CMDCOR_DATA + loaded_rom
+            time.sleep(CHECK_INTERVAL)
 
-                                    # Update tty2rpi marquee
-                                    update_tty2rpi_marquee(marquee_data)
+    except KeyboardInterrupt:
+        logging.info("Stopped monitoring.")
 
-
-                                else:
-
-                                    print(f"[INFO] Title bar data: {loaded_rom}")
-
-                                    # MAME - add command: "CMDCOR§PARAM§" plus the Loaded Game name
-                                    marquee_data = CMDCOR_DATA + loaded_rom
-
-                                    # Update tty2rpi marquee by handing it off to ssh to handle the rest
-                                    update_tty2rpi_marquee(marquee_data)
-
-            # Start Dreamcast Emulator process check
-            elif dreamcast_process_running(DC_EMU_PROCESS):
-
-                # gather all the running tasks
-                for window in gw.getAllWindows():
-
-                    # Dreamcast emulator application window
-                    if 'Flycast' in window.title:
-
-                        dc_emu_title = window.title
-
-                        # find the game title in the title bar.  The game title is located after the emulator title
-                        # "Flycast - Game Name"
-                        start_index = dc_emu_title.find("- ")
-
-                        # prevent rom name from writing over and over * infinity
-                        if dc_emu_title != last_loaded_dc_rom:
-
-                            # Update the last loaded game
-                            last_loaded_dc_rom = dc_emu_title
-
-                            dc_emu_pid = dreamcast_process_running(DC_EMU_PROCESS)
-
-                            print(f"[INFO] Application: {DC_EMU_PROCESS}, PID: {dc_emu_pid}")
-                            print(f"[INFO] Title bar data: {dc_emu_title}")
-
-                            # Default Flycast window title
-                            if dc_emu_title == "Flycast":
-
-                                dc_emu_title = "DCEMU-MENU"
-
-                                # add tty2rpi command "CMDCOR§PARAM§" before "MAME-MENU"
-                                marquee_data = CMDCOR_DATA + dc_emu_title
-
-                                # Update tty2rpi marquee
-                                update_tty2rpi_marquee(marquee_data)
-
-                            else:
-
-                                if start_index != -1:
-
-                                    # extract the rom name
-                                    loaded_dc_rom = dc_emu_title[start_index + 2:]
-
-                                    print(f"[INFO] Title bar data: {loaded_dc_rom}")
-
-                                    # Dreamcast emulator - add command: "CMDCOR§PARAM§" plus the loaded game name
-                                    marquee_data = CMDCOR_DATA + loaded_dc_rom
-
-                                    # Update tty2rpi marquee by handing it off to ssh to handle the rest
-                                    update_tty2rpi_marquee(marquee_data)
-
-            # Start Playstation emulator process check
-            elif psx_process_running(PS1_EMU_PROCESS):
-
-                # gather all the running tasks
-                for window in gw.getAllWindows():
-
-                    # Find running PS1 emulator application window
-                    if "DuckStation" in window.title:
-
-                        raw_ps1_emu_title = window.title
-
-                        # find the game title in the title bar.
-                        end_index = raw_ps1_emu_title.find(" ")
-
-                        # extract the 'DuckStation' name in the title bar
-                        ps1_emu_title = raw_ps1_emu_title[:end_index]
-
-                        # prevent rom name from writing over and over * infinity
-                        if ps1_emu_title != last_loaded_ps1_rom:
-
-                            # Update the last loaded game
-                            last_loaded_ps1_rom = ps1_emu_title
-
-                            ps1_emu_pid = psx_process_running(PS1_EMU_PROCESS)
-
-                            print(f"[INFO] Application: {PS1_EMU_PROCESS}, PID: {ps1_emu_pid}")
-
-                            if ps1_emu_title == "DuckStation":
-
-                                print(f"[INFO] Original title bar data: {raw_ps1_emu_title}")
-                                print(f"[INFO] Modified title bar data: {ps1_emu_title}")
-
-                                ps1_emu_title = "PS1EMU-MENU"
-
-                                # Playstation emulator - add command: "CMDCOR§PARAM§" plus the loaded game name
-                                marquee_data = CMDCOR_DATA + ps1_emu_title
-
-                                # Update tty2rpi marquee by handing it off to ssh to handle the rest
-                                update_tty2rpi_marquee(marquee_data)
-
-        except Exception as e:
-
-            print(f"Error checking process: {e}")
-
-        time.sleep(CHECK_INTERVAL)
-
+# =========================
+# Script Entry Point
+# =========================
 if __name__ == "__main__":
-    monitor_processes()
+    main_loop()
