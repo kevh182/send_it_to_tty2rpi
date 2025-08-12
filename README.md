@@ -1,7 +1,7 @@
 ### Overview
 "send_it_to_tty2rpi" are extension apps for use with [ojaksch's (aka RealLarry) "MiSTer tty2rpi" project](https://github.com/ojaksch/MiSTer_tty2rpi).  More information on this project be found on the [discussion page for tty2rpi](https://misterfpga.org/viewtopic.php?t=5437) on the [MiSTer FPGA Forum](https://misterfpga.org).
 
-"send_it_to_tty2rpi" assumes you already have "MiSTer tty2rpi" set up.
+"send_it_to_tty2rpi" assumes you already have a "MiSTer tty2rpi" marquee set up.
 
 ### Python
 "send_it_to_tty2rpi" requires Python 3.  If you don't have Python installed, you can [follow this guide](https://www.geeksforgeeks.org/python/how-to-install-python-on-windows/) to install it on Windows.  "send_it_to_tty2rpi" was written with Windows in mind.  
