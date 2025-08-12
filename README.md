@@ -1,1 +1,3 @@
-"send it to tty2rpi" is an extension app for use with [ojaksch's (aka RealLarry) MiSTer tty2rpi project](https://github.com/ojaksch/MiSTer_tty2rpi).  More information can be found on the [discussion page for tty2rpi](https://misterfpga.org/viewtopic.php?t=5437) on the [MiSTer FPGA Forum](https://misterfpga.org)
+### Overview
+"send it to tty2rpi" is an extension app for use with [ojaksch's (aka RealLarry) "MiSTer tty2rpi" project](https://github.com/ojaksch/MiSTer_tty2rpi).  More information on this project be found on the [discussion page for tty2rpi](https://misterfpga.org/viewtopic.php?t=5437) on the [MiSTer FPGA Forum](https://misterfpga.org).
+
