@@ -4,7 +4,7 @@
 "send_it_to_tty2rpi" assumes you already have a "MiSTer tty2rpi" marquee set up.
 
 ### Python
-"send_it_to_tty2rpi" requires Python 3.  If you don't have Python installed, you can [follow this guide](https://www.geeksforgeeks.org/python/how-to-install-python-on-windows/) to install it on Windows.  "send_it_to_tty2rpi" was written with Windows in mind.  
+"send_it_to_tty2rpi" requires Python 3.  If you don't have Python installed, you can [follow this guide](https://www.geeksforgeeks.org/python/how-to-install-python-on-windows/) to install it on Windows.  "send_it_to_tty2rpi" was written with Windows in mind because it monitors thr running processes and reads the "window title bar"..  
 
 ## "tty2rpi_sender.py"
 Monitors specific running process in Windows and reads the window title bar for it's data to send to tty2rpi.  A Windows PC is required.
