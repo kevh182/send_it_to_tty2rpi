@@ -7,7 +7,7 @@ send_it_to_tty2rpi assumes you already have tty2rpi set up.
 "send_it_to_tty2rpi" requires Python 3.  If you don't have Python installed, you can [follow this guide](https://www.geeksforgeeks.org/python/how-to-install-python-on-windows/) to install it on Windows.  "send_it_to_tty2rpi" was written with Windows in mind.  
 
 ## "tty2rpi_sender.py"
-Monitors running process in Windows specfically.  A Windows PC is required.
+Monitors specific running process in Windows and reads the window title bar for it's data to send to tty2rpi.  A Windows PC is required.
 
 ### Additional Required Python Modules for "tty2rpi_sender.py"
 
