@@ -1,5 +1,5 @@
 ### Overview
-"send_it_to_tty2rpi" are extension apps for use with [ojaksch's (aka RealLarry) "MiSTer tty2rpi" project](https://github.com/ojaksch/MiSTer_tty2rpi).  More information on this project be found on the [discussion page for tty2rpi](https://misterfpga.org/viewtopic.php?t=5437) on the [MiSTer FPGA Forum](https://misterfpga.org).
+"send_it_to_tty2rpi" are extension apps for use with [ojaksch's (aka RealLarry) "MiSTer tty2rpi" project](https://github.com/ojaksch/MiSTer_tty2rpi).  More information on this project can be found on the [discussion page for tty2rpi](https://misterfpga.org/viewtopic.php?t=5437) on the [MiSTer FPGA Forum](https://misterfpga.org).
 
 "send_it_to_tty2rpi" assumes you already have a "MiSTer tty2rpi" marquee set up.
 
