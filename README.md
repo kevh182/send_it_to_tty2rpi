@@ -31,10 +31,6 @@ Reads data from  MemCardPro's api and sends it's "current state" to "tty2rpi" to
 ```
 http://<mcp-ip-address>/api/currentstate
 ```
-
-Designed to run on the Raspberry Pi, since the original intention of "MiSTer tty2rpi" was to also run on a Raspberry Pi.  It "should" work on any Linux OS and Debian is prefered.  I test tty2rpi with an old laptop running Debian and it seems to work just fine.
-
-
 Examples of MemCardPro 2 api data
 ```
 { "currentMode": "PS2", "gameName": "MemoryCard1", "gameID": "MemoryCard1", "currentChannel": 1, "rssi": -18, "currentSize": "8MB" }
@@ -42,6 +38,8 @@ Examples of MemCardPro 2 api data
 ```
 { "currentMode": "PS2", "gameName": "God of War", "gameID": "SCUS-97399", "currentChannel": 1, "rssi": -18, "currentSize": "8MB" }
 ```
+
+Designed to run on the Raspberry Pi, since the original intention of "tty2rpi" was to also run on a Raspberry Pi.  It "should" work on any Linux OS but Debian is prefered.  I test tty2rpi with an old laptop running Debian and it seems to work just fine.
 
 ### Additional Required Python Modules for "tty2rpi_mcp_sender.py"
 
