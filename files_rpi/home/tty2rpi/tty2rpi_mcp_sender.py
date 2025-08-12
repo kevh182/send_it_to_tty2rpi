@@ -19,8 +19,12 @@ config.read('tty2rpi_sender.ini')
 MCP2_IP = config['MemCardPro']['mcp2_ip']
 MCP_GC_IP = config['MemCardPro']['mcp_gc_ip']
 
-CHECK_INTERVAL = 5   # seconds
-HTTP_TIMEOUT   = 3   # seconds for HTTP requests
+CHECK_INTERVAL = 5
+
+# seconds for HTTP requests
+HTTP_TIMEOUT   = 3
+
+# tty2rpi magic word
 CMDCOR_DATA    = "CMDCOR§PARAM§"
 
 default_ps1_mc = config['MemCardPro']['default_memory_card_ps1']
@@ -28,7 +32,7 @@ default_ps2_mc = config['MemCardPro']['default_memory_card_ps2']
 default_gc_mc  = config['MemCardPro']['default_memory_card_gc']
 
 remote_file_path = "/dev/shm/tty2rpi.socket"
-GAME_DB_PATH     = '../../../Game_DB.csv'
+GAME_DB_PATH     = '/home/tty2rpi/Game_DB.csv'
 
 # ---------------- Logging (INI controlled) ----------------
 def _resolve_log_level(name: str) -> int:
@@ -60,7 +64,8 @@ GAME_DB        = {}  # cached lookup {game_id: (title, serial)}
 
 # ---------------- Helpers ----------------
 def _norm(s: str) -> str:
-    """Normalize strings for case/space-insensitive comparisons."""
+
+    # Normalize strings for case/space-insensitive comparisons
     return (s or "").strip().upper()
 
 # Store normalized defaults
@@ -69,7 +74,8 @@ default_ps2_mc_norm = _norm(default_ps2_mc)
 default_gc_mc_norm  = _norm(default_gc_mc)
 
 def load_game_db(csv_path: str):
-    """Load the game database into a dict {game_id: (title, serial)} with raw & normalized keys."""
+
+    #Load the game database into a dict {game_id: (title, serial)}
     db = {}
     p = Path(csv_path)
     if not p.exists():
@@ -89,24 +95,20 @@ def load_game_db(csv_path: str):
     return db
 
 def update_tty2rpi_marquee(marquee_data: str):
-    """Write to /dev/shm/tty2rpi.socket atomically (RPi local write, no SSH)."""
-    tmp_path = remote_file_path + ".tmp"
+
+    # many readers expect newline-terminated commands
+    data = marquee_data if marquee_data.endswith("\n") else marquee_data + "\n"
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(marquee_data)
+
+        # Write to /dev/shm/tty2rpi.socket
+        with open(remote_file_path, "w", encoding="utf-8") as f:
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, remote_file_path)  # atomic within same filesystem
-        logging.info("Wrote to %s", remote_file_path)
-        logging.debug("Data sent to tty2rpi.socket: %s", marquee_data)
+        logging.info("Wrote to %s", len(data), remote_file_path)
+        logging.debug("Data sent: %r", data)
     except Exception as e:
         logging.error("Local write failed: %s", e)
-        # best effort cleanup
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception:
-            pass
 
 def do_ps1_mode(state: dict):
     logging.debug(
@@ -127,7 +129,7 @@ def do_gc_mode(state: dict):
     )
 
 def get_state(host: str):
-    """Return JSON state from /api/currentState, or None if request fails."""
+    # Return JSON state from the MemCardPro api - /api/currentState
     try:
         r = requests.get(f"http://{host}/api/currentState", timeout=HTTP_TIMEOUT)
         r.raise_for_status()
@@ -136,7 +138,8 @@ def get_state(host: str):
         return None
 
 def find_memcard_ip():
-    """Return the first responding IP among the configured devices, or None."""
+
+    # Return the first responding IP among the configured devices, or None
     for candidate in (MCP2_IP, MCP_GC_IP):
         if candidate and get_state(candidate):
             return candidate
@@ -166,13 +169,16 @@ def get_game_id(host: str):
             logging.warning("Unrecognized mode: %s", data.get('currentMode') or 'UNKNOWN')
         last_mode = mode
 
-    # --- Pick correct default memory card token ---
+    # --- Pick the correct default memory card ---
     if mode == "PS1":
         memory_card_token = default_ps1_mc_norm
+
     elif mode == "PS2":
         memory_card_token = default_ps2_mc_norm
+
     elif mode == "GC":
         memory_card_token = default_gc_mc_norm
+
     else:
         memory_card_token = None
 
@@ -190,7 +196,9 @@ def get_game_id(host: str):
         if not game_name:
             game_name, serial = GAME_DB.get(gid_norm, (None, None))
         if not game_name:
-            return True  # silently skip unknown IDs
+
+            # silently skip unknown IDs
+            return True
 
     # --- Update marquee only on change ---
     if game_name != last_game_name:
@@ -206,6 +214,7 @@ def get_game_id(host: str):
 
 # ---------------- Entry ----------------
 if __name__ == "__main__":
+
     # Ensure we can write to /dev/shm
     if not os.access(Path(remote_file_path).parent, os.W_OK):
         logging.error("Cannot write to %s — check permissions.", Path(remote_file_path).parent)
@@ -215,7 +224,7 @@ if __name__ == "__main__":
     GAME_DB = load_game_db(GAME_DB_PATH)
 
     current_ip = None
-    logging.info("Starting MemCard Pro watcher on Raspberry Pi (HTTP probe only, local write).")
+    logging.info("Starting MemCard Pro watcher")
 
     try:
         while True:
